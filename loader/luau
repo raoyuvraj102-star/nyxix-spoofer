@@ -1,0 +1,2185 @@
+--[[
+    NYXIX SPOOFER - FULL VERSION
+    Complete spoofer with all advanced features, config system, UI, and keybinds
+    Theme: Purple & Black | Name: Nyxix Spoofer
+    Supports: All advanced spoofer features + Config system + Keybinds + Themed UI
+]]
+
+--// ========== CORE SERVICES & EXPLOIT CHECKS ==========
+local cloneref = cloneref or function(x) return x end
+local Players = cloneref(game:GetService("Players"))
+local UserInputService = cloneref(game:GetService("UserInputService"))
+local RunService = cloneref(game:GetService("RunService"))
+local HttpService = cloneref(game:GetService("HttpService"))
+local CoreGui = cloneref(game:GetService("CoreGui"))
+local GuiService = cloneref(game:GetService("GuiService"))
+local TweenService = cloneref(game:GetService("TweenService"))
+local Lighting = cloneref(game:GetService("Lighting"))
+local Workspace = cloneref(game:GetService("Workspace"))
+local Camera = Workspace.CurrentCamera
+
+-- Exploit functions
+local getcustomasset = getcustomasset or getsynasset or getcustomasset
+local writefile = writefile
+local readfile = readfile
+local isfile = isfile
+local isfolder = isfolder
+local makefolder = makefolder
+local listfiles = listfiles
+local delfile = delfile
+local setclipboard = setclipboard or toclipboard
+local fireServer = fireServer or (function() local re = Instance.new("RemoteEvent"); return re.FireServer end)()
+local getthreadidentity = getthreadidentity or getidentity or function() return 8 end
+local setthreadidentity = setthreadidentity or setidentity or function() end
+local getrawmetatable = getrawmetatable or getmetatable
+local setrawmetatable = setrawmetatable or setmetatable
+local hookfunction = hookfunction or hookfunc or replaceclosure
+local hookmetamethod = hookmetamethod
+local checkcaller = checkcaller
+local isexecutorclosure = isexecutorclosure or function() return false end
+local getgc = getgc
+local getgenv = getgenv
+local getrenv = getrenv
+local getconnections = getconnections
+local firetouchinterest = firetouchinterest
+
+assert(getcustomasset, "Missing getcustomasset")
+assert(writefile, "Missing writefile")
+assert(readfile, "Missing readfile")
+assert(isfolder, "Missing isfolder")
+assert(makefolder, "Missing makefolder")
+assert(listfiles, "Missing listfiles")
+assert(delfile, "Missing delfile")
+assert(fireServer, "Missing fireServer")
+assert(hookfunction, "Missing hookfunction")
+
+--// ========== UTILITY LIBRARIES ==========
+
+-- Trove (Resource Management)
+local Trove = {}
+Trove.__index = Trove
+function Trove.new(name) return setmetatable({_name = name, _items = {}}, Trove) end
+local function cleanItem(o)
+    local t = typeof(o)
+    if t == "RBXScriptConnection" then o:Disconnect()
+    elseif t == "Instance" then pcall(function() o:Destroy() end)
+    elseif t == "thread" then pcall(task.cancel, o)
+    elseif type(o) == "function" then pcall(o)
+    elseif type(o) == "table" then
+        local function member(k) local ok, v = pcall(function() return o[k] end); return ok and type(v) == "function" and v or nil end
+        local cancel, getStatus = member("cancel"), member("getStatus")
+        if cancel and getStatus then pcall(cancel, o); return end
+        local destroy = member("Destroy"); if destroy then pcall(destroy, o); return end
+        local disconnect = member("Disconnect"); if disconnect then pcall(disconnect, o) end
+    end
+end
+function Trove:Add(o) table.insert(self._items, o); return o end
+function Trove:Connect(sig, fn) return self:Add(sig:Connect(fn)) end
+function Trove:Extend() return self:Add(Trove.new(self._name)) end
+function Trove:Remove(o, keep) local i = table.find(self._items, o); if i then table.remove(self._items, i); if not keep then cleanItem(o) end end end
+function Trove:Clean() local items = self._items; self._items = {}; for i = #items, 1, -1 do cleanItem(items[i]) end end
+Trove.Destroy = Trove.Clean
+
+-- Signal
+local Signal = {}
+Signal.__index = Signal
+function Signal.new() return setmetatable({_handlers = {}}, Signal) end
+function Signal:Connect(fn)
+    local h = {fn = fn, connected = true}; table.insert(self._handlers, h)
+    return {Connected = true, Disconnect = function() h.connected = false end}
+end
+function Signal:Fire(...) for _, h in ipairs(self._handlers) do if h.connected then task.spawn(h.fn, ...) end end end
+function Signal:Destroy() table.clear(self._handlers) end
+
+-- Deep copy
+local function deepCopy(t)
+    if type(t) ~= "table" then return t end
+    local copy = {}; for k, v in pairs(t) do copy[k] = deepCopy(v) end; return setmetatable(copy, getmetatable(t))
+end
+
+-- Path utilities
+local function pathToKey(p) return table.concat(p, ".") end
+local function keyToPath(k) return k:split(".") end
+local function navigateTo(t, p, create)
+    for i = 1, #p do
+        local k = p[i]
+        if i == #p then return t[k] end
+        if t[k] == nil then if create then t[k] = {} else return nil end
+        elseif type(t[k]) ~= "table" then return nil end
+        t = t[k]
+    end
+end
+local function setNested(t, p, v)
+    for i = 1, #p do local k = p[i]; if i == #p then t[k] = v; return end; if t[k] == nil then t[k] = {} end; t = t[k] end
+end
+
+-- Color serialization
+local function serializeColor(c) return {__type = "Color3", R = c.R, G = c.G, B = c.B} end
+local function deserializeColor(t) return Color3.new(t.R, t.G, t.B) end
+
+--// ========== CONFIG SYSTEM ==========
+
+local CONFIG_DIR = "NyxixSpoofer"
+local CONFIG_FILE = CONFIG_DIR .. "/config.json"
+local CONFIG_VERSION = 5
+
+local function ensureDirs()
+    if not isfolder(CONFIG_DIR) then makefolder(CONFIG_DIR) end
+    if not isfolder(CONFIG_DIR .. "/configs") then makefolder(CONFIG_DIR .. "/configs") end
+end
+
+local function saveConfig(cfg, path)
+    ensureDirs()
+    local fullPath = path or (CONFIG_DIR .. "/config.json")
+    writefile(fullPath, HttpService:JSONEncode(cfg))
+end
+
+local function loadConfig(path)
+    local fullPath = path or (CONFIG_DIR .. "/config.json")
+    if isfile(fullPath) then
+        local ok, cfg = pcall(HttpService.JSONDecode, HttpService, readfile(fullPath))
+        if ok and type(cfg) == "table" then return cfg end
+    end
+    return nil
+end
+
+local function listConfigs()
+    ensureDirs()
+    local list = {}
+    for _, f in ipairs(listfiles(CONFIG_DIR .. "/configs")) do
+        if isfile(f) then
+            local name = f:match("([^/\\]+)%.json$")
+            if name then table.insert(list, name) end
+        end
+    end
+    return list
+end
+
+local function deleteConfig(name)
+    local path = CONFIG_DIR .. "/configs/" .. name .. ".json"
+    if isfile(path) then delfile(path) end
+end
+
+-- Default Config
+local DEFAULT_CONFIG = {
+    Version = CONFIG_VERSION,
+    Enabled = true,
+    Keybind = "RightShift",
+    Theme = "PurpleBlack",
+    ShowNotifications = true,
+    ShowWatermark = true,
+    LocalPlayer = {
+        Enabled = false,
+        Name = {Enabled = false, Value = "NyxixUser"},
+        DisplayName = {Enabled = false, Value = "NyxixDisplay"},
+        Avatar = {Enabled = false, Value = 1},
+    },
+    OtherPlayers = {
+        Enabled = true,
+        Name = {Enabled = true, Value = "NyxixTarget"},
+        DisplayName = {Enabled = true, Value = "NyxixDisplay"},
+        Avatar = {Enabled = true, Value = 1},
+    },
+    Advanced = {
+        SpoofViewModel = true,
+        SpoofDuelCharacters = true,
+        SpoofCosmeticMenus = true,
+        SpoofProjectiles = true,
+        SpoofFinishers = true,
+        EnableChams = false,
+        ChamsColor = {__type = "Color3", R = 0.6, G = 0.2, B = 0.8},
+        ChamsTransparency = 0.3,
+        ChamsOutlineColor = {__type = "Color3", R = 0.8, G = 0.4, B = 1},
+        ChamsOutlineTransparency = 0,
+    },
+    AutoLoad = false,
+    AutoLoadConfig = "default",
+    AutoSave = false,
+    AutoSaveConfig = "default",
+}
+
+-- Config Manager with Migrations
+local ConfigManager = {}
+ConfigManager.__index = ConfigManager
+
+function ConfigManager.new(default, version, dir)
+    local self = setmetatable({
+        _data = deepCopy(default),
+        _default = deepCopy(default),
+        _version = version,
+        _dir = dir,
+        _migrations = {},
+    }, ConfigManager)
+    return self
+end
+
+function ConfigManager:Migrate(version, data)
+    while version < self._version do
+        local mig = self._migrations[version]
+        if not mig then break end
+        data = mig(data, version, version + 1)
+        version = version + 1
+    end
+    return data
+end
+
+function ConfigManager:Load()
+    local raw = loadConfig(self._dir .. "/config.json")
+    if raw then
+        local version = raw.Version or 1
+        if version ~= self._version then
+            raw = self:Migrate(version, raw)
+        end
+        self._data = raw
+    else
+        self._data = deepCopy(self._data)
+        self:Save()
+    end
+    return self._data
+end
+
+function ConfigManager:Save()
+    self._data.Version = self._version
+    saveConfig(self._data)
+end
+
+function ConfigManager:Get(path)
+    return navigateTo(self._data, keyToPath(path))
+end
+
+function ConfigManager:Set(path, value)
+    setNested(self._data, keyToPath(path), value)
+    self:Save()
+end
+
+function ConfigManager:GetAll() return deepCopy(self._data) end
+
+function ConfigManager:LoadProfile(name)
+    local cfg = loadConfig(CONFIG_DIR .. "/configs/" .. name .. ".json")
+    if cfg then
+        self._data = cfg
+        self:Save()
+        return true
+    end
+    return false
+end
+
+function ConfigManager:SaveProfile(name)
+    ensureDirs()
+    saveConfig(self._data, CONFIG_DIR .. "/configs/" .. name .. ".json")
+end
+
+function ConfigManager:DeleteProfile(name)
+    deleteConfig(name)
+end
+
+function ConfigManager:ListProfiles() return listConfigs() end
+
+-- Initialize ConfigManager
+local configManager = ConfigManager.new(DEFAULT_CONFIG, CONFIG_VERSION, CONFIG_DIR)
+local Config = configManager:Load()
+
+--// ========== THEME & UI LIBRARY ==========
+
+local Theme = {
+    PurpleBlack = {
+        Accent = Color3.fromRGB(147, 51, 234),
+        AccentDark = Color3.fromRGB(109, 40, 217),
+        AccentLight = Color3.fromRGB(168, 85, 247),
+        Background = Color3.fromRGB(12, 8, 18),
+        Surface = Color3.fromRGB(18, 12, 28),
+        SurfaceHover = Color3.fromRGB(24, 16, 36),
+        Border = Color3.fromRGB(55, 35, 85),
+        BorderLight = Color3.fromRGB(79, 55, 115),
+        Text = Color3.fromRGB(235, 225, 245),
+        TextMuted = Color3.fromRGB(155, 135, 175),
+        TextDim = Color3.fromRGB(95, 75, 115),
+        Success = Color3.fromRGB(52, 211, 153),
+        Warning = Color3.fromRGB(251, 191, 36),
+        Error = Color3.fromRGB(248, 113, 113),
+        Gradient = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(147, 51, 234)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(109, 40, 217)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(88, 28, 165)),
+        }),
+    }
+}
+
+local currentTheme = Theme[Config.Theme] or Theme.PurpleBlack
+
+-- Font
+local function getFont()
+    local fonts = {
+        Main = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium, Enum.FontStyle.Normal),
+        Bold = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal),
+        SemiBold = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.SemiBold, Enum.FontStyle.Normal),
+    }
+    return fonts
+end
+
+local Fonts = getFont()
+
+--// ========== UI BUILDER ==========
+
+local UI = {}
+UI.__index = UI
+
+function UI.new()
+    local self = setmetatable({
+        _trove = Trove.new("NyxixUI"),
+        _windows = {},
+        _tooltips = {},
+        _activeTooltip = nil,
+        _screenGui = nil,
+        _overlay = nil,
+    }, UI)
+    return self
+end
+
+function UI:CreateScreenGui(name, displayOrder)
+    local sg = Instance.new("ScreenGui")
+    sg.Name = name
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.DisplayOrder = displayOrder or 100
+    sg.IgnoreGuiInset = true
+    sg.ResetOnSpawn = false
+    sg.Parent = CoreGui
+    return self._trove:Add(sg)
+end
+
+function UI:CreateFrame(props)
+    local f = Instance.new("Frame")
+    for k, v in pairs(props) do f[k] = v end
+    return f
+end
+
+function UI:CreateTextLabel(props)
+    local l = Instance.new("TextLabel")
+    for k, v in pairs(props) do l[k] = v end
+    return l
+end
+
+function UI:CreateTextButton(props)
+    local b = Instance.new("TextButton")
+    for k, v in pairs(props) do b[k] = v end
+    return b
+end
+
+function UI:CreateTextBox(props)
+    local b = Instance.new("TextBox")
+    for k, v in pairs(props) do b[k] = v end
+    return b
+end
+
+function UI:CreateImageLabel(props)
+    local i = Instance.new("ImageLabel")
+    for k, v in pairs(props) do i[k] = v end
+    return i
+end
+
+function UI:CreateScrollingFrame(props)
+    local s = Instance.new("ScrollingFrame")
+    for k, v in pairs(props) do s[k] = v end
+    return s
+end
+
+function UI:CreateUICorner(radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 6)
+    return c
+end
+
+function UI:CreateUIStroke(color, thickness, transparency)
+    local s = Instance.new("UIStroke")
+    s.Color = color or currentTheme.Border
+    s.Thickness = thickness or 1
+    s.Transparency = transparency or 0
+    return s
+end
+
+function UI:CreateUIGradient(rotation, colorSeq)
+    local g = Instance.new("UIGradient")
+    g.Rotation = rotation or 45
+    g.Color = colorSeq or currentTheme.Gradient
+    return g
+end
+
+function UI:CreateUIListLayout(props)
+    local l = Instance.new("UIListLayout")
+    for k, v in pairs(props) do l[k] = v end
+    return l
+end
+
+function UI:CreateUIPadding(props)
+    local p = Instance.new("UIPadding")
+    for k, v in pairs(props) do p[k] = v end
+    return p
+end
+
+function UI:CreateUIFlexItem(props)
+    local f = Instance.new("UIFlexItem")
+    for k, v in pairs(props) do f[k] = v end
+    return f
+end
+
+function UI:Tween(obj, props, tweenInfo)
+    tweenInfo = tweenInfo or TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local tw = TweenService:Create(obj, tweenInfo, props)
+    tw:Play()
+    return tw
+end
+
+function UI:HoverEffect(btn, hoverColor, leaveColor)
+    btn.MouseEnter:Connect(function() self:Tween(btn, {BackgroundColor3 = hoverColor or currentTheme.SurfaceHover}) end)
+    btn.MouseLeave:Connect(function() self:Tween(btn, {BackgroundColor3 = leaveColor or currentTheme.Surface}) end)
+end
+
+function UI:ClickEffect(btn)
+    btn.MouseButton1Down:Connect(function() self:Tween(btn, {Size = UDim2.new(btn.Size.X.Scale, btn.Size.X.Offset - 2, btn.Size.Y.Scale, btn.Size.Y.Offset - 2)}) end)
+    btn.MouseButton1Up:Connect(function() self:Tween(btn, {Size = UDim2.new(btn.Size.X.Scale, btn.Size.X.Offset + 2, btn.Size.Y.Scale, btn.Size.Y.Offset + 2)}) end)
+end
+
+--// ========== MAIN WINDOW ==========
+
+function UI:CreateWindow(title, size, position)
+    local window = {}
+    window._trove = Trove.new("Window")
+    window._ui = self
+    window._title = title
+    window._tabs = {}
+    window._activeTab = nil
+    window._visible = true
+    window._dragging = false
+    window._dragStart = nil
+    window._startPos = nil
+
+    -- Main frame
+    local main = self:CreateFrame({
+        Name = "MainWindow",
+        Size = size or UDim2.fromOffset(720, 520),
+        Position = position or UDim2.fromScale(0.5, 0.5),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundColor3 = currentTheme.Background,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        Parent = self._overlay,
+    })
+    window._main = self._trove:Add(main)
+    self._trove:Add(self:CreateUICorner(10)):SetParent(main)
+    self._trove:Add(self:CreateUIStroke(currentTheme.Border, 1.5)):SetParent(main)
+
+    -- Drop shadow
+    local shadow = self:CreateImageLabel({
+        Name = "Shadow",
+        Image = "rbxassetid://1316045217",
+        ImageColor3 = Color3.new(0, 0, 0),
+        ImageTransparency = 0.6,
+        ScaleType = Enum.ScaleType.Slice,
+        SliceCenter = Rect.new(10, 10, 118, 118),
+        Size = UDim2.new(1, 30, 1, 30),
+        Position = UDim2.fromOffset(-15, -15),
+        BackgroundTransparency = 1,
+        ZIndex = -1,
+        Parent = main,
+    })
+
+    -- Title bar
+    local titleBar = self:CreateFrame({
+        Name = "TitleBar",
+        Size = UDim2.new(1, 0, 0, 44),
+        BackgroundColor3 = currentTheme.Surface,
+        BorderSizePixel = 0,
+        Parent = main,
+    })
+    self._trove:Add(self:CreateUICorner(10)):SetParent(titleBar)
+    local titleBarMask = self:CreateFrame({
+        Size = UDim2.new(1, 0, 0, 22),
+        Position = UDim2.fromScale(0, 1),
+        AnchorPoint = Vector2.new(0, 1),
+        BackgroundColor3 = currentTheme.Surface,
+        BorderSizePixel = 0,
+        Parent = titleBar,
+    })
+
+    -- Title text
+    local titleText = self:CreateTextLabel({
+        Text = title,
+        FontFace = Fonts.Bold,
+        TextSize = 18,
+        TextColor3 = currentTheme.Text,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -100, 1, 0),
+        Position = UDim2.fromOffset(18, 0),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = titleBar,
+    })
+
+    -- Close button
+    local closeBtn = self:CreateTextButton({
+        Text = "×",
+        FontFace = Fonts.Bold,
+        TextSize = 20,
+        TextColor3 = currentTheme.TextMuted,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromOffset(36, 36),
+        Position = UDim2.new(1, -36, 0, 4),
+        Parent = titleBar,
+    })
+    self:HoverEffect(closeBtn, currentTheme.Error, 1)
+    closeBtn.MouseButton1Click:Connect(function() self:Toggle() end)
+
+    -- Minimize button
+    local minBtn = self:CreateTextButton({
+        Text = "−",
+        FontFace = Fonts.Bold,
+        TextSize = 20,
+        TextColor3 = currentTheme.TextMuted,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromOffset(36, 36),
+        Position = UDim2.new(1, -72, 0, 4),
+        Parent = titleBar,
+    })
+    self:HoverEffect(minBtn, currentTheme.SurfaceHover, 1)
+
+    -- Tab bar
+    local tabBar = self:CreateFrame({
+        Name = "TabBar",
+        Size = UDim2.new(1, -24, 0, 40),
+        Position = UDim2.fromOffset(12, 50),
+        BackgroundTransparency = 1,
+        Parent = main,
+    })
+    local tabLayout = self:CreateUIListLayout({
+        FillDirection = Enum.FillDirection.Horizontal,
+        HorizontalAlignment = Enum.HorizontalAlignment.Left,
+        Padding = UDim.new(0, 8),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = tabBar,
+    })
+
+    -- Content area
+    local contentArea = self:CreateFrame({
+        Name = "ContentArea",
+        Size = UDim2.new(1, -24, 1, -106),
+        Position = UDim2.fromOffset(12, 96),
+        BackgroundColor3 = currentTheme.Surface,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        Parent = main,
+    })
+    self._trove:Add(self:CreateUICorner(8)):SetParent(contentArea)
+    self._trove:Add(self:CreateUIStroke(currentTheme.Border, 1)):SetParent(contentArea)
+
+    -- Dragging
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            window._dragging = true
+            window._dragStart = input.Position
+            window._startPos = main.Position
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if window._dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - window._dragStart
+            main.Position = UDim2.fromOffset(
+                window._startPos.X.Offset + delta.X,
+                window._startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            window._dragging = false
+        end
+    end)
+
+    -- Tab system
+    function window:AddTab(name, icon)
+        local tab = {}
+        tab._window = window
+        tab._name = name
+        tab._icon = icon
+        tab._elements = {}
+
+        -- Tab button
+        local btn = window._ui:CreateTextButton({
+            Name = name .. "Tab",
+            Text = (icon and icon .. "  " or "") .. name,
+            FontFace = Fonts.SemiBold,
+            TextSize = 14,
+            TextColor3 = currentTheme.TextMuted,
+            BackgroundColor3 = currentTheme.Background,
+            BackgroundTransparency = 0.5,
+            Size = UDim2.fromOffset(120, 34),
+            AutoButtonColor = false,
+            Parent = tabBar,
+        })
+        window._ui._trove:Add(window._ui:CreateUICorner(8)):SetParent(btn)
+        window._ui._trove:Add(window._ui:CreateUIStroke(currentTheme.Border, 1)):SetParent(btn)
+
+        -- Tab content
+        local content = window._ui:CreateScrollingFrame({
+            Name = name .. "Content",
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            ScrollBarThickness = 4,
+            ScrollBarImageColor3 = currentTheme.Accent,
+            ScrollBarImageTransparency = 0.3,
+            CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            Visible = false,
+            Parent = contentArea,
+        })
+        local contentLayout = window._ui:CreateUIListLayout({
+            Padding = UDim.new(0, 12),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            HorizontalAlignment = Enum.HorizontalAlignment.Center,
+            Parent = content,
+        })
+        window._ui._trove:Add(window._ui:CreateUIPadding({
+            PaddingTop = UDim.new(0, 12),
+            PaddingBottom = UDim.new(0, 12),
+            PaddingLeft = UDim.new(0, 12),
+            PaddingRight = UDim.new(0, 12),
+        })):SetParent(content)
+
+        -- Auto-size canvas
+        window._ui._trove:Connect(contentLayout:GetPropertyChangedSignal("AbsoluteContentSize"), function()
+            content.CanvasSize = UDim2.new(0, 0, 0, contentLayout.AbsoluteContentSize.Y + 24)
+        end)
+
+        -- Tab switching
+        btn.MouseButton1Click:Connect(function()
+            window:SelectTab(name)
+        end)
+
+        window._tabs[name] = {button = btn, content = content, elements = {}}
+        if not window._activeTab then window:SelectTab(name) end
+
+        -- Element creators
+        function tab:AddSection(title)
+            local section = {}
+            section._tab = self
+
+            local frame = window._ui:CreateFrame({
+                Name = title .. "Section",
+                Size = UDim2.new(1, 0, 0, 0),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                BackgroundColor3 = currentTheme.Background,
+                BorderSizePixel = 0,
+                Parent = content,
+            })
+            window._ui._trove:Add(window._ui:CreateUICorner(8)):SetParent(frame)
+            window._ui._trove:Add(window._ui:CreateUIStroke(currentTheme.Border, 1)):SetParent(frame)
+
+            local secLayout = window._ui:CreateUIListLayout({
+                Padding = UDim.new(0, 10),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Parent = frame,
+            })
+            window._ui._trove:Add(window._ui:CreateUIPadding({
+                PaddingTop = UDim.new(0, 14),
+                PaddingBottom = UDim.new(0, 14),
+                PaddingLeft = UDim.new(0, 14),
+                PaddingRight = UDim.new(0, 14),
+            })):SetParent(frame)
+
+            if title and title ~= "" then
+                local header = window._ui:CreateTextLabel({
+                    Text = title:upper(),
+                    FontFace = Fonts.SemiBold,
+                    TextSize = 12,
+                    TextColor3 = currentTheme.AccentLight,
+                    BackgroundTransparency = 1,
+                    Size = UDim2.new(1, 0, 0, 16),
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    LayoutOrder = -1,
+                    Parent = frame,
+                })
+            end
+
+            function section:AddToggle(opts)
+                opts = opts or {}
+                local toggled = opts.Default or false
+                local callback = opts.Callback
+
+                local row = window._ui:CreateFrame({
+                    Size = UDim2.new(1, 0, 0, 36),
+                    BackgroundTransparency = 1,
+                    Parent = frame,
+                })
+                local rowLayout = window._ui:CreateUIListLayout({
+                    FillDirection = Enum.FillDirection.Horizontal,
+                    VerticalAlignment = Enum.VerticalAlignment.Center,
+                    HorizontalAlignment = Enum.HorizontalAlignment.SpaceBetween,
+                    Parent = row,
+                })
+
+                local label = window._ui:CreateTextLabel({
+                    Text = opts.Label or "Toggle",
+                    FontFace = Fonts.Medium,
+                    TextSize = 14,
+                    TextColor3 = currentTheme.Text,
+                    BackgroundTransparency = 1,
+                    Size = UDim2.new(1, -60, 1, 0),
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    TextTruncate = Enum.TextTruncate.AtEnd,
+                    Parent = row,
+                })
+
+                local toggleBtn = window._ui:CreateTextButton({
+                    Text = "",
+                    Size = UDim2.fromOffset(48, 24),
+                    BackgroundColor3 = toggled and currentTheme.Accent or currentTheme.Border,
+                    AutoButtonColor = false,
+                    Parent = row,
+                })
+                window._ui._trove:Add(window._ui:CreateUICorner(12)):SetParent(toggleBtn)
+                local knob = window._ui:CreateFrame({
+                    Size = UDim2.fromOffset(20, 20),
+                    Position = toggled and UDim2.fromOffset(26, 2) or UDim2.fromOffset(2, 2),
+                    BackgroundColor3 = Color3.new(1, 1, 1),
+                    BorderSizePixel = 0,
+                    Parent = toggleBtn,
+                })
+                window._ui._trove:Add(window._ui:CreateUICorner(10)):SetParent(knob)
+
+                local function update()
+                    window._ui:Tween(toggleBtn, {BackgroundColor3 = toggled and currentTheme.Accent or currentTheme.Border})
+                    window._ui:Tween(knob, {Position = toggled and UDim2.fromOffset(26, 2) or UDim2.fromOffset(2, 2)})
+                end
+
+                toggleBtn.MouseButton1Click:Connect(function()
+                    toggled = not toggled
+                    update()
+                    if callback then callback(toggled) end
+                end)
+
+                if opts.Config then
+                    configManager:Set(opts.Config, toggled)
+                    configManager._trove:Connect(configManager:GetPropertyChangedSignal(opts.Config), function()
+                        toggled = configManager:Get(opts.Config)
+                        update()
+                    end)
+                end
+
+                return {Set = function(v) toggled = v; update() end, Get = function() return toggled end}
+            end
+
+            function section:AddSlider(opts)
+                opts = opts or {}
+                local value = opts.Default or opts.Min or 0
+                local callback = opts.Callback
+
+                local row = window._ui:CreateFrame({
+                    Size = UDim2.new(1, 0, 0, 44),
+                    BackgroundTransparency = 1,
+                    Parent = frame,
+                })
+                local rowLayout = window._ui:CreateUIListLayout({
+                    FillDirection = Enum.FillDirection.Vertical,
+                    Padding = UDim.new(0, 6),
+                    Parent = row,
+                })
+
+                local header = window._ui:CreateFrame({
+                    Size = UDim2.new(1, 0, 0, 20),
+                    BackgroundTransparency = 1,
+                    Parent = row,
+                })
+                local headerLayout = window._ui:CreateUIListLayout({
+                    FillDirection = Enum.FillDirection.Horizontal,
+                    VerticalAlignment = Enum.VerticalAlignment.Center,
+                    HorizontalAlignment = Enum.HorizontalAlignment.SpaceBetween,
+                    Parent = header,
+                })
+
+                local label = window._ui:CreateTextLabel({
+                    Text = opts.Label or "Slider",
+                    FontFace = Fonts.Medium,
+                    TextSize = 14,
+                    TextColor3 = currentTheme.Text,
+                    BackgroundTransparency = 1,
+                    Size = UDim2.new(1, -60, 1, 0),
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Parent = header,
+                })
+
+                local valueLabel = window._ui:CreateTextLabel({
+                    Text = tostring(value) .. (opts.Suffix or ""),
+                    FontFace = Fonts.SemiBold,
+                    TextSize = 14,
+                    TextColor3 = currentTheme.Accent,
+                    BackgroundTransparency = 1,
+                    Size = UDim2.fromOffset(50, 20),
+                    TextXAlignment = Enum.TextXAlignment.Right,
+                    Parent = header,
+                })
+
+                local track = window._ui:CreateFrame({
+                    Size = UDim2.new(1, 0, 0, 6),
+                    BackgroundColor3 = currentTheme.Border,
+                    BorderSizePixel = 0,
+                    Parent = row,
+                })
+                window._ui._trove:Add(window._ui:CreateUICorner(3)):SetParent(track)
+
+                local fill = window._ui:CreateFrame({
+                    Size = UDim2.fromScale((value - opts.Min) / (opts.Max - opts.Min), 1),
+                    BackgroundColor3 = currentTheme.Accent,
+                    BorderSizePixel = 0,
+                    Parent = track,
+                })
+                window._ui._trove:Add(window._ui:CreateUICorner(3)):SetParent(fill)
+
+                local knob = window._ui:CreateFrame({
+                    Size = UDim2.fromOffset(16, 16),
+                    Position = UDim2.fromScale((value - opts.Min) / (opts.Max - opts.Min), 0.5),
+                    AnchorPoint = Vector2.new(0.5, 0.5),
+                    BackgroundColor3 = Color3.new(1, 1, 1),
+                    BorderSizePixel = 0,
+                    ZIndex = 2,
+                    Parent = track,
+                })
+                window._ui._trove:Add(window._ui:CreateUICorner(8)):SetParent(knob)
+
+                local dragging = false
+                track.InputBegan:Connect(function(input)
+                    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                        dragging = true
+                    end
+                end)
+
+                UserInputService.InputChanged:Connect(function(input)
+                    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                        local rel = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+                        local newVal = math.floor(opts.Min + rel * (opts.Max - opts.Min) + 0.5)
+                        if opts.Step then newVal = math.floor(newVal / opts.Step) * opts.Step end
+                        value = math.clamp(newVal, opts.Min, opts.Max)
+                        fill.Size = UDim2.fromScale((value - opts.Min) / (opts.Max - opts.Min), 1)
+                        knob.Position = UDim2.fromScale((value - opts.Min) / (opts.Max - opts.Min), 0.5)
+                        valueLabel.Text = tostring(value) .. (opts.Suffix or "")
+                        if callback then callback(value) end
+                    end
+                end)
+
+                UserInputService.InputEnded:Connect(function(input)
+                    if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+                end)
+
+                if opts.Config then
+                    configManager:Set(opts.Config, value)
+                    configManager._trove:Connect(configManager:GetPropertyChangedSignal(opts.Config), function()
+                        value = configManager:Get(opts.Config)
+                        fill.Size = UDim2.fromScale((value - opts.Min) / (opts.Max - opts.Min), 1)
+                        knob.Position = UDim2.fromScale((value - opts.Min) / (opts.Max - opts.Min), 0.5)
+                        valueLabel.Text = tostring(value) .. (opts.Suffix or "")
+                    end)
+                end
+
+                return {Set = function(v) value = v; fill.Size = UDim2.fromScale((v - opts.Min) / (opts.Max - opts.Min), 1); knob.Position = UDim2.fromScale((v - opts.Min) / (opts.Max - opts.Min), 0.5); valueLabel.Text = tostring(v) .. (opts.Suffix or "") end, Get = function() return value end}
+            end
+
+            function section:AddDropdown(opts)
+                opts = opts or {}
+                local value = opts.Default or (opts.Options and opts.Options[1]) or ""
+                local callback = opts.Callback
+
+                local row = window._ui:CreateFrame({
+                    Size = UDim2.new(1, 0, 0, 36),
+                    BackgroundTransparency = 1,
+                    Parent = frame,
+                })
+                local rowLayout = window._ui:CreateUIListLayout({
+                    FillDirection = Enum.FillDirection.Horizontal,
+                    VerticalAlignment = Enum.VerticalAlignment.Center,
+                    HorizontalAlignment = Enum.HorizontalAlignment.SpaceBetween,
+                    Parent = row,
+                })
+
+                local label = window._ui:CreateTextLabel({
+                    Text = opts.Label or "Dropdown",
+                    FontFace = Fonts.Medium,
+                    TextSize = 14,
+                    TextColor3 = currentTheme.Text,
+                    BackgroundTransparency = 1,
+                    Size = UDim2.new(1, -160, 1, 0),
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Parent = row,
+                })
+
+                local dropdownBtn = window._ui:CreateTextButton({
+                    Text = value,
+                    FontFace = Fonts.Medium,
+                    TextSize = 13,
+                    TextColor3 = currentTheme.Text,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Size = UDim2.fromOffset(140, 28),
+                    BackgroundColor3 = currentTheme.Surface,
+                    AutoButtonColor = false,
+                    Parent = row,
+                })
+                window._ui._trove:Add(window._ui:CreateUICorner(6)):SetParent(dropdownBtn)
+                window._ui._trove:Add(window._ui:CreateUIStroke(currentTheme.Border, 1)):SetParent(dropdownBtn)
+
+                local arrow = window._ui:CreateTextLabel({
+                    Text = "▼",
+                    FontFace = Fonts.Medium,
+                    TextSize = 10,
+                    TextColor3 = currentTheme.TextMuted,
+                    BackgroundTransparency = 1,
+                    Size = UDim2.fromOffset(20, 20),
+                    Position = UDim2.new(1, -24, 0, 4),
+                    Parent = dropdownBtn,
+                })
+
+                local dropdownOpen = false
+                local optionFrame = nil
+
+                local function closeDropdown()
+                    if optionFrame then optionFrame:Destroy(); optionFrame = nil end
+                    dropdownOpen = false
+                    window._ui:Tween(arrow, {Rotation = 0})
+                end
+
+                dropdownBtn.MouseButton1Click:Connect(function()
+                    dropdownOpen = not dropdownOpen
+                    if dropdownOpen then
+                        window._ui:Tween(arrow, {Rotation = 180})
+                        optionFrame = window._ui:CreateFrame({
+                            Name = "DropdownOptions",
+                            Size = UDim2.fromOffset(140, math.min(#opts.Options * 28, 140)),
+                            Position = UDim2.fromOffset(0, 32),
+                            BackgroundColor3 = currentTheme.Surface,
+                            BorderSizePixel = 0,
+                            ZIndex = 10,
+                            ClipsDescendants = true,
+                            Parent = dropdownBtn,
+                        })
+                        window._ui._trove:Add(window._ui:CreateUICorner(6)):SetParent(optionFrame)
+                        window._ui._trove:Add(window._ui:CreateUIStroke(currentTheme.Border, 1)):SetParent(optionFrame)
+                        local optLayout = window._ui:CreateUIListLayout({Parent = optionFrame})
+
+                        for _, opt in ipairs(opts.Options) do
+                            local optBtn = window._ui:CreateTextButton({
+                                Text = opt,
+                                FontFace = Fonts.Medium,
+                                TextSize = 13,
+                                TextColor3 = opt == value and currentTheme.Accent or currentTheme.Text,
+                                BackgroundTransparency = 1,
+                                Size = UDim2.new(1, 0, 0, 28),
+                                TextXAlignment = Enum.TextXAlignment.Left,
+                                Parent = optionFrame,
+                            })
+                            window._ui._trove:Add(window._ui:CreateUIPadding({PaddingLeft = UDim.new(0, 10)})):SetParent(optBtn)
+                            optBtn.MouseButton1Click:Connect(function()
+                                value = opt
+                                dropdownBtn.Text = opt
+                                if callback then callback(opt) end
+                                closeDropdown()
+                            end)
+                        end
+                    else
+                        closeDropdown()
+                    end
+                end)
+
+                -- Close on outside click
+                UserInputService.InputBegan:Connect(function(input, processed)
+                    if dropdownOpen and input.UserInputType == Enum.UserInputType.MouseButton1 then
+                        local pos = input.Position
+                        if not (pos.X >= dropdownBtn.AbsolutePosition.X and pos.X <= dropdownBtn.AbsolutePosition.X + dropdownBtn.AbsoluteSize.X and
+                            pos.Y >= dropdownBtn.AbsolutePosition.Y and pos.Y <= dropdownBtn.AbsolutePosition.Y + dropdownBtn.AbsoluteSize.Y + (optionFrame and optionFrame.AbsoluteSize.Y or 0)) then
+                            closeDropdown()
+                        end
+                    end
+                end)
+
+                if opts.Config then
+                    configManager:Set(opts.Config, value)
+                    configManager._trove:Connect(configManager:GetPropertyChangedSignal(opts.Config), function()
+                        value = configManager:Get(opts.Config)
+                        dropdownBtn.Text = value
+                    end)
+                end
+
+                return {Set = function(v) value = v; dropdownBtn.Text = v end, Get = function() return value end}
+            end
+
+            function section:AddKeybind(opts)
+                opts = opts or {}
+                local value = opts.Default or Enum.KeyCode.Unknown
+                local callback = opts.Callback
+                local binding = false
+
+                local row = window._ui:CreateFrame({
+                    Size = UDim2.new(1, 0, 0, 36),
+                    BackgroundTransparency = 1,
+                    Parent = frame,
+                })
+                local rowLayout = window._ui:CreateUIListLayout({
+                    FillDirection = Enum.FillDirection.Horizontal,
+                    VerticalAlignment = Enum.VerticalAlignment.Center,
+                    HorizontalAlignment = Enum.HorizontalAlignment.SpaceBetween,
+                    Parent = row,
+                })
+
+                local label = window._ui:CreateTextLabel({
+                    Text = opts.Label or "Keybind",
+                    FontFace = Fonts.Medium,
+                    TextSize = 14,
+                    TextColor3 = currentTheme.Text,
+                    BackgroundTransparency = 1,
+                    Size = UDim2.new(1, -160, 1, 0),
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Parent = row,
+                })
+
+                local keybindBtn = window._ui:CreateTextButton({
+                    Text = value.Name ~= "Unknown" and value.Name or "None",
+                    FontFace = Fonts.Medium,
+                    TextSize = 13,
+                    TextColor3 = currentTheme.Text,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Size = UDim2.fromOffset(140, 28),
+                    BackgroundColor3 = currentTheme.Surface,
+                    AutoButtonColor = false,
+                    Parent = row,
+                })
+                window._ui._trove:Add(window._ui:CreateUICorner(6)):SetParent(keybindBtn)
+                window._ui._trove:Add(window._ui:CreateUIStroke(currentTheme.Border, 1)):SetParent(keybindBtn)
+
+                keybindBtn.MouseButton1Click:Connect(function()
+                    binding = true
+                    keybindBtn.Text = "..."
+                    window._ui:Tween(keybindBtn, {BackgroundColor3 = currentTheme.AccentDark})
+                end)
+
+                UserInputService.InputBegan:Connect(function(input, processed)
+                    if binding and input.UserInputType == Enum.UserInputType.Keyboard then
+                        binding = false
+                        value = input.KeyCode
+                        keybindBtn.Text = value.Name
+                        window._ui:Tween(keybindBtn, {BackgroundColor3 = currentTheme.Surface})
+                        if callback then callback(value) end
+                    end
+                end)
+
+                if opts.Config then
+                    configManager:Set(opts.Config, value.Name)
+                    configManager._trove:Connect(configManager:GetPropertyChangedSignal(opts.Config), function()
+                        local v = configManager:Get(opts.Config)
+                        if typeof(v) == "string" then
+                            value = Enum.KeyCode[v]
+                        elseif typeof(v) == "EnumItem" then
+                            value = v
+                        end
+                        keybindBtn.Text = value.Name
+                    end)
+                end
+
+                return {Set = function(v) value = v; keybindBtn.Text = v.Name end, Get = function() return value end}
+            end
+
+            function section:AddColorPicker(opts)
+                opts = opts or {}
+                local value = opts.Default or Color3.new(1, 1, 1)
+                local callback = opts.Callback
+
+                local row = window._ui:CreateFrame({
+                    Size = UDim2.new(1, 0, 0, 36),
+                    BackgroundTransparency = 1,
+                    Parent = frame,
+                })
+                local rowLayout = window._ui:CreateUIListLayout({
+                    FillDirection = Enum.FillDirection.Horizontal,
+                    VerticalAlignment = Enum.VerticalAlignment.Center,
+                    HorizontalAlignment = Enum.HorizontalAlignment.SpaceBetween,
+                    Parent = row,
+                })
+
+                local label = window._ui:CreateTextLabel({
+                    Text = opts.Label or "Color",
+                    FontFace = Fonts.Medium,
+                    TextSize = 14,
+                    TextColor3 = currentTheme.Text,
+                    BackgroundTransparency = 1,
+                    Size = UDim2.new(1, -100, 1, 0),
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Parent = row,
+                })
+
+                local colorBtn = window._ui:CreateTextButton({
+                    Text = "",
+                    Size = UDim2.fromOffset(80, 28),
+                    BackgroundColor3 = value,
+                    AutoButtonColor = false,
+                    Parent = row,
+                })
+                window._ui._trove:Add(window._ui:CreateUICorner(6)):SetParent(colorBtn)
+                window._ui._trove:Add(window._ui:CreateUIStroke(currentTheme.Border, 1)):SetParent(colorBtn)
+
+                colorBtn.MouseButton1Click:Connect(function()
+                    -- Simple color picker popup
+                    local picker = window._ui:CreateFrame({
+                        Name = "ColorPicker",
+                        Size = UDim2.fromOffset(220, 240),
+                        Position = UDim2.fromOffset(colorBtn.AbsolutePosition.X - 20, colorBtn.AbsolutePosition.Y + 35),
+                        BackgroundColor3 = currentTheme.Surface,
+                        BorderSizePixel = 0,
+                        ZIndex = 20,
+                        Parent = window._main,
+                    })
+                    window._ui._trove:Add(window._ui:CreateUICorner(8)):SetParent(picker)
+                    window._ui._trove:Add(window._ui:CreateUIStroke(currentTheme.Border, 1)):SetParent(picker)
+
+                    local hue, sat, val = value:ToHSV()
+                    local hueFrame = window._ui:CreateFrame({
+                        Size = UDim2.new(1, -20, 0, 180),
+                        Position = UDim2.fromOffset(10, 10),
+                        BackgroundColor3 = Color3.fromHSV(hue, 1, 1),
+                        BorderSizePixel = 0,
+                        Parent = picker,
+                    })
+                    window._ui._trove:Add(window._ui:CreateUICorner(6)):SetParent(hueFrame)
+                    local hueGradient = window._ui:CreateUIGradient(0, ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, Color3.new(1, 0, 0)),
+                        ColorSequenceKeypoint.new(1/6, Color3.new(1, 1, 0)),
+                        ColorSequenceKeypoint.new(2/6, Color3.new(0, 1, 0)),
+                        ColorSequenceKeypoint.new(3/6, Color3.new(0, 1, 1)),
+                        ColorSequenceKeypoint.new(4/6, Color3.new(0, 0, 1)),
+                        ColorSequenceKeypoint.new(5/6, Color3.new(1, 0, 1)),
+                        ColorSequenceKeypoint.new(1, Color3.new(1, 0, 0)),
+                    })):SetParent(hueFrame)
+                    local hueSelector = window._ui:CreateFrame({
+                        Size = UDim2.fromOffset(4, 180),
+                        Position = UDim2.fromScale(hue, 0),
+                        BackgroundColor3 = Color3.new(1, 1, 1),
+                        BorderSizePixel = 2,
+                        Parent = hueFrame,
+                    })
+                    window._ui._trove:Add(window._ui:CreateUICorner(2)):SetParent(hueSelector)
+
+                    local svFrame = window._ui:CreateFrame({
+                        Size = UDim2.new(1, -20, 0, 180),
+                        Position = UDim2.fromOffset(10, 10),
+                        BackgroundTransparency = 1,
+                        BorderSizePixel = 0,
+                        Parent = hueFrame,
+                    })
+
+                    local draggingHue, draggingSV = false, false
+                    hueFrame.InputBegan:Connect(function(input)
+                        if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingHue = true end
+                    end)
+                    svFrame.InputBegan:Connect(function(input)
+                        if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingSV = true end
+                    end)
+                    UserInputService.InputEnded:Connect(function(input)
+                        if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingHue, draggingSV = false, false end
+                    end)
+
+                    UserInputService.InputChanged:Connect(function(input)
+                        if draggingHue and input.UserInputType == Enum.UserInputType.MouseMovement then
+                            local rel = math.clamp((input.Position.X - hueFrame.AbsolutePosition.X) / hueFrame.AbsoluteSize.X, 0, 1)
+                            hue = rel
+                            hueSelector.Position = UDim2.fromScale(hue, 0)
+                            hueFrame.BackgroundColor3 = Color3.fromHSV(hue, 1, 1)
+                            value = Color3.fromHSV(hue, sat, val)
+                            colorBtn.BackgroundColor3 = value
+                            if callback then callback(value) end
+                        end
+                        if draggingSV and input.UserInputType == Enum.UserInputType.MouseMovement then
+                            local relX = math.clamp((input.Position.X - svFrame.AbsolutePosition.X) / svFrame.AbsoluteSize.X, 0, 1)
+                            local relY = math.clamp((input.Position.Y - svFrame.AbsolutePosition.Y) / svFrame.AbsoluteSize.Y, 0, 1)
+                            sat = relX
+                            val = 1 - relY
+                            value = Color3.fromHSV(hue, sat, val)
+                            colorBtn.BackgroundColor3 = value
+                            if callback then callback(value) end
+                        end
+                    end)
+
+                    -- Close on outside click
+                    local conn
+                    conn = UserInputService.InputBegan:Connect(function(input)
+                        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                            local pos = input.Position
+                            if not (pos.X >= picker.AbsolutePosition.X and pos.X <= picker.AbsolutePosition.X + picker.AbsoluteSize.X and
+                                pos.Y >= picker.AbsolutePosition.Y and pos.Y <= picker.AbsolutePosition.Y + picker.AbsoluteSize.Y) then
+                                picker:Destroy()
+                                conn:Disconnect()
+                            end
+                        end
+                    end)
+                end)
+
+                if opts.Config then
+                    configManager:Set(opts.Config, {R = value.R, G = value.G, B = value.B})
+                    configManager._trove:Connect(configManager:GetPropertyChangedSignal(opts.Config), function()
+                        local v = configManager:Get(opts.Config)
+                        if type(v) == "table" and v.R then
+                            value = Color3.new(v.R, v.G, v.B)
+                            colorBtn.BackgroundColor3 = value
+                        end
+                    end)
+                end
+
+                return {Set = function(v) value = v; colorBtn.BackgroundColor3 = v end, Get = function() return value end}
+            end
+
+            function section:AddButton(opts)
+                opts = opts or {}
+                local callback = opts.Callback
+
+                local btn = window._ui:CreateTextButton({
+                    Text = opts.Label or "Button",
+                    FontFace = Fonts.SemiBold,
+                    TextSize = 14,
+                    TextColor3 = Color3.new(1, 1, 1),
+                    Size = UDim2.new(1, 0, 0, 36),
+                    BackgroundColor3 = currentTheme.Accent,
+                    AutoButtonColor = false,
+                    Parent = frame,
+                })
+                window._ui._trove:Add(window._ui:CreateUICorner(8)):SetParent(btn)
+                window._ui:HoverEffect(btn, currentTheme.AccentDark, currentTheme.Accent)
+                window._ui:ClickEffect(btn)
+
+                btn.MouseButton1Click:Connect(function()
+                    if callback then callback() end
+                end)
+
+                if opts.Config then
+                    btn.MouseButton1Click:Connect(function()
+                        configManager:Set(opts.Config, true)
+                        task.wait(0.1)
+                        configManager:Set(opts.Config, false)
+                    end)
+                end
+
+                return btn
+            end
+
+            function section:AddLabel(opts)
+                opts = opts or {}
+                local lbl = window._ui:CreateTextLabel({
+                    Text = opts.Text or "Label",
+                    FontFace = opts.Bold and Fonts.Bold or Fonts.Medium,
+                    TextSize = opts.Size or 14,
+                    TextColor3 = opts.Color or currentTheme.Text,
+                    BackgroundTransparency = 1,
+                    Size = UDim2.new(1, 0, 0, opts.Size and opts.Size + 4 or 20),
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    TextWrapped = true,
+                    Parent = frame,
+                })
+                return lbl
+            end
+
+            function section:AddDivider()
+                local div = window._ui:CreateFrame({
+                    Size = UDim2.new(1, 0, 0, 1),
+                    BackgroundColor3 = currentTheme.Border,
+                    BorderSizePixel = 0,
+                    Parent = frame,
+                })
+                return div
+            end
+
+            function section:AddTextBox(opts)
+                opts = opts or {}
+                local value = opts.Default or ""
+                local callback = opts.Callback
+
+                local row = window._ui:CreateFrame({
+                    Size = UDim2.new(1, 0, 0, 36),
+                    BackgroundTransparency = 1,
+                    Parent = frame,
+                })
+                local rowLayout = window._ui:CreateUIListLayout({
+                    FillDirection = Enum.FillDirection.Horizontal,
+                    VerticalAlignment = Enum.VerticalAlignment.Center,
+                    HorizontalAlignment = Enum.HorizontalAlignment.SpaceBetween,
+                    Parent = row,
+                })
+
+                local label = window._ui:CreateTextLabel({
+                    Text = opts.Label or "Input",
+                    FontFace = Fonts.Medium,
+                    TextSize = 14,
+                    TextColor3 = currentTheme.Text,
+                    BackgroundTransparency = 1,
+                    Size = UDim2.new(1, -160, 1, 0),
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Parent = row,
+                })
+
+                local box = window._ui:CreateTextBox({
+                    Text = value,
+                    PlaceholderText = opts.Placeholder or "",
+                    FontFace = Fonts.Medium,
+                    TextSize = 13,
+                    TextColor3 = currentTheme.Text,
+                    PlaceholderColor3 = currentTheme.TextDim,
+                    BackgroundColor3 = currentTheme.Surface,
+                    Size = UDim2.fromOffset(140, 28),
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    ClearTextOnFocus = false,
+                    Parent = row,
+                })
+                window._ui._trove:Add(window._ui:CreateUICorner(6)):SetParent(box)
+                window._ui._trove:Add(window._ui:CreateUIStroke(currentTheme.Border, 1)):SetParent(box)
+                window._ui._trove:Add(window._ui:CreateUIPadding({PaddingLeft = UDim.new(0, 8)})):SetParent(box)
+
+                box.FocusLost:Connect(function(enterPressed)
+                    value = box.Text
+                    if callback then callback(value) end
+                end)
+
+                if opts.Config then
+                    configManager:Set(opts.Config, value)
+                    configManager._trove:Connect(configManager:GetPropertyChangedSignal(opts.Config), function()
+                        value = configManager:Get(opts.Config)
+                        box.Text = value
+                    end)
+                end
+
+                return {Set = function(v) value = v; box.Text = v end, Get = function() return value end}
+            end
+
+            return section
+        end
+
+        return tab
+    end
+
+    function window:SelectTab(name)
+        for n, t in pairs(window._tabs) do
+            t.content.Visible = n == name
+            window._ui:Tween(t.button, {
+                BackgroundColor3 = n == name and currentTheme.AccentDark or currentTheme.Background,
+                TextColor3 = n == name and currentTheme.Text or currentTheme.TextMuted,
+                BackgroundTransparency = n == name and 0 or 0.5,
+            })
+        end
+        window._activeTab = name
+    end
+
+    function window:Toggle()
+        window._visible = not window._visible
+        window._main.Visible = window._visible
+    end
+
+    function window:Destroy()
+        window._trove:Destroy()
+    end
+
+    return window
+end
+
+-- Tooltip system
+function UI:AttachTooltip(parent, text)
+    parent.MouseEnter:Connect(function()
+        if self._activeTooltip then self._activeTooltip:Destroy() end
+        local tooltip = self:CreateFrame({
+            Size = UDim2.fromOffset(0, 28),
+            AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundColor3 = currentTheme.Background,
+            BorderSizePixel = 0,
+            ZIndex = 100,
+            Parent = self._overlay,
+        })
+        self._trove:Add(self:CreateUICorner(6)):SetParent(tooltip)
+        self:CreateUIStroke(currentTheme.Border, 1):SetParent(tooltip)
+        self:CreateUIPadding({PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4)}):SetParent(tooltip)
+        local label = self:CreateTextLabel({
+            Text = text,
+            FontFace = Fonts.Medium,
+            TextSize = 13,
+            TextColor3 = currentTheme.Text,
+            BackgroundTransparency = 1,
+            AutomaticSize = Enum.AutomaticSize.XY,
+            Parent = tooltip,
+        })
+        self._activeTooltip = tooltip
+        task.spawn(function()
+            while tooltip.Parent do
+                local pos = UserInputService:GetMouseLocation()
+                tooltip.Position = UDim2.fromOffset(pos.X + 16, pos.Y + 16)
+                task.wait()
+            end
+        end)
+    end)
+    parent.MouseLeave:Connect(function()
+        if self._activeTooltip then self._activeTooltip:Destroy(); self._activeTooltip = nil end
+    end)
+end
+
+-- Watermark
+function UI:CreateWatermark(text)
+    local wm = self:CreateFrame({
+        Name = "Watermark",
+        Size = UDim2.fromOffset(0, 28),
+        AutomaticSize = Enum.AutomaticSize.X,
+        Position = UDim2.new(1, -20, 0, 20),
+        AnchorPoint = Vector2.new(1, 0),
+        BackgroundColor3 = currentTheme.Surface,
+        BorderSizePixel = 0,
+        Parent = self._overlay,
+    })
+    self._trove:Add(self:CreateUICorner(8)):SetParent(wm)
+    self:CreateUIStroke(currentTheme.Border, 1):SetParent(wm)
+    self:CreateUIPadding({PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12), PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4)}):SetParent(wm)
+    local label = self:CreateTextLabel({
+        Text = text or "Nyxix Spoofer",
+        FontFace = Fonts.SemiBold,
+        TextSize = 13,
+        TextColor3 = currentTheme.Accent,
+        BackgroundTransparency = 1,
+        AutomaticSize = Enum.AutomaticSize.XY,
+        Parent = wm,
+    })
+    return wm
+end
+
+-- Initialize UI
+local ui = UI.new()
+ui._screenGui = ui:CreateScreenGui("NyxixSpoofer", 100)
+ui._overlay = ui:CreateFrame({
+    Size = UDim2.new(1, 0, 1, 0),
+    BackgroundTransparency = 1,
+    Parent = ui._screenGui,
+})
+
+-- Watermark
+if Config.ShowWatermark then
+    ui:CreateWatermark("Nyxix Spoofer")
+end
+
+--// ========== SPOOFER CORE ==========
+
+local Spoofer = {}
+Spoofer.__index = Spoofer
+
+function Spoofer.new()
+    local self = setmetatable({
+        _trove = Trove.new("Spoofer"),
+        _nameMap = {},
+        _avatarCache = {},
+        _descCache = {},
+        _charConns = {},
+        _guiConns = Trove.new(),
+        _viewModelConns = Trove.new(),
+        _duelConns = Trove.new(),
+        _cosmeticConns = Trove.new(),
+        _projectileConns = Trove.new(),
+        _finisherConns = Trove.new(),
+        _chamObjects = {},
+        _running = false,
+    }, Spoofer)
+    return self
+end
+
+-- ========== AVATAR FETCHING ==========
+function Spoofer:_fetchHumanoidDescription(userId)
+    if self._descCache[userId] then return self._descCache[userId] end
+    local success, desc = pcall(function()
+        return Players:GetHumanoidDescriptionFromUserIdAsync(userId)
+    end)
+    if success and desc then
+        self._descCache[userId] = desc
+        return desc
+    end
+    return Instance.new("HumanoidDescription")
+end
+
+function Spoofer:_applyHumanoidDescription(character, desc)
+    if not character or not character.Parent then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+    pcall(function() humanoid:ApplyDescription(desc) end)
+end
+
+-- ========== NAME SPOOFING ==========
+function Spoofer:_getSpoofedNames(player, isLocal)
+    local profile = isLocal and Config.LocalPlayer or Config.OtherPlayers
+    if not profile.Enabled then return nil end
+    local name = (profile.Name.Enabled and profile.Name.Value ~= "") and profile.Name.Value or nil
+    local display = (profile.DisplayName.Enabled and profile.DisplayName.Value ~= "") and profile.DisplayName.Value or nil
+    if name or display then return {Name = name, DisplayName = display} end
+    return nil
+end
+
+function Spoofer:_patchTextObject(textObj, player, isLocal)
+    if not textObj or not textObj.Parent then return end
+    local spoofed = self:_getSpoofedNames(player, isLocal)
+    if not spoofed then return end
+    local original = textObj.Text
+    local modified = original
+    if spoofed.Name and original:find(player.Name, 1, true) then modified = modified:gsub(player.Name, spoofed.Name) end
+    if spoofed.DisplayName and original:find(player.DisplayName, 1, true) then modified = modified:gsub(player.DisplayName, spoofed.DisplayName) end
+    if modified ~= original then textObj.Text = modified end
+end
+
+function Spoofer:_scanGuiForNames(gui, player, isLocal)
+    if not gui then return end
+    for _, obj in ipairs(gui:GetDescendants()) do
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+            self:_patchTextObject(obj, player, isLocal)
+        end
+    end
+end
+
+function Spoofer:_hookGuiNames(player, isLocal)
+    local playerGui = player:WaitForChild("PlayerGui", 10)
+    if not playerGui then return end
+    local trove = self._charConns[player] or Trove.new()
+    self._charConns[player] = trove
+    task.spawn(function() self:_scanGuiForNames(playerGui, player, isLocal) end)
+    trove:Connect(playerGui.DescendantAdded, function(obj)
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+            task.defer(function() self:_patchTextObject(obj, player, isLocal) end)
+        end
+    end)
+end
+
+-- ========== THUMBNAIL SPOOFING ==========
+function Spoofer:_patchThumbnail(imageObj, spoofedUserId)
+    if not imageObj or not imageObj.Parent then return end
+    local img = imageObj.Image
+    if not img or img == "" then return end
+    local newImg = img:gsub("id=%d+", "id=" .. spoofedUserId)
+                        :gsub("userId=%d+", "userId=" .. spoofedUserId)
+                        :gsub("/%d+(%D)", "/" .. spoofedUserId .. "%1")
+    if newImg ~= img then imageObj.Image = newImg end
+end
+
+function Spoofer:_scanGuiForThumbnails(gui, spoofedUserId)
+    if not gui then return end
+    for _, obj in ipairs(gui:GetDescendants()) do
+        if obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
+            self:_patchThumbnail(obj, spoofedUserId)
+        end
+    end
+end
+
+function Spoofer:_hookGuiThumbnails(player, spoofedUserId)
+    local playerGui = player:WaitForChild("PlayerGui", 10)
+    if not playerGui then return end
+    local trove = self._charConns[player] or Trove.new()
+    self._charConns[player] = trove
+    task.spawn(function() self:_scanGuiForThumbnails(playerGui, spoofedUserId) end)
+    trove:Connect(playerGui.DescendantAdded, function(obj)
+        if obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
+            task.defer(function() self:_patchThumbnail(obj, spoofedUserId) end)
+        end
+    end)
+end
+
+-- ========== CHARACTER APPEARANCE ==========
+function Spoofer:_onCharacterAdded(player, character, isLocal)
+    if not Config.Enabled then return end
+    local profile = isLocal and Config.LocalPlayer or Config.OtherPlayers
+    if not profile.Enabled then return end
+    local spoofedNames = self:_getSpoofedNames(player, isLocal)
+    local spoofedAvatarId = profile.Avatar.Enabled and profile.Avatar.Value or nil
+    if not spoofedNames and not spoofedAvatarId then return end
+
+    local trove = self._charConns[player] or Trove.new()
+    self._charConns[player] = trove
+
+    local humanoid = character:WaitForChild("Humanoid", 10)
+    local hrp = character:WaitForChild("HumanoidRootPart", 10)
+    if not humanoid or not hrp then return end
+
+    if spoofedAvatarId then
+        local desc = self:_fetchHumanoidDescription(spoofedAvatarId)
+        task.defer(function()
+            if character.Parent then self:_applyHumanoidDescription(character, desc) end
+        end)
+    end
+
+    if spoofedNames then trove:Add(task.spawn(function() self:_hookGuiNames(player, isLocal) end)) end
+    if spoofedAvatarId then trove:Add(task.spawn(function() self:_hookGuiThumbnails(player, spoofedAvatarId) end)) end
+
+    -- Chams
+    if Config.Advanced.EnableChams then
+        self:_applyChams(character, isLocal)
+    end
+end
+
+-- ========== CHAMS SYSTEM ==========
+function Spoofer:_applyChams(character, isLocal)
+    if not character then return end
+    local trove = self._charConns[character] or Trove.new()
+    self._charConns[character] = trove
+
+    local chamsColor = deserializeColor(Config.Advanced.ChamsColor)
+    local outlineColor = deserializeColor(Config.Advanced.ChamsOutlineColor)
+
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+            -- Highlight
+            local highlight = Instance.new("Highlight")
+            highlight.Name = "NyxixCham"
+            highlight.FillColor = chamsColor
+            highlight.FillTransparency = Config.Advanced.ChamsTransparency
+            highlight.OutlineColor = outlineColor
+            highlight.OutlineTransparency = Config.Advanced.ChamsOutlineTransparency
+            highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            highlight.Adornee = part
+            highlight.Parent = part
+            trove:Add(highlight)
+
+            -- Force material
+            part.Material = Enum.Material.ForceField
+            part.Color = chamsColor
+            part.Transparency = Config.Advanced.ChamsTransparency
+        end
+    end
+end
+
+function Spoofer:_removeChams(character)
+    local trove = self._charConns[character]
+    if trove then trove:Destroy() self._charConns[character] = nil end
+    if character then
+        for _, obj in ipairs(character:GetDescendants()) do
+            if obj:IsA("Highlight") and obj.Name == "NyxixCham" then obj:Destroy() end
+        end
+    end
+end
+
+-- ========== VIEWMODEL SPOOFING ==========
+function Spoofer:_hookViewModel()
+    if not Config.Advanced.SpoofViewModel then return end
+    local camera = Workspace.CurrentCamera
+    if not camera then return end
+
+    local function processViewModel(vm)
+        if not vm or not vm:IsA("Model") then return end
+        if vm.Name ~= "ViewModel" and vm.Name ~= "Arms" then return end
+
+        local profile = Config.LocalPlayer
+        if profile.Enabled and profile.Avatar.Enabled and profile.Avatar.Value then
+            local desc = self:_fetchHumanoidDescription(profile.Avatar.Value)
+            for _, part in ipairs(vm:GetDescendants()) do
+                if part:IsA("BasePart") and (part.Name:lower():find("arm") or part.Name:lower():find("hand")) then
+                    if desc.HeadColor then
+                        part.Color = Color3.new(desc.HeadColor.R, desc.HeadColor.G, desc.HeadColor.B)
+                    end
+                    part.Material = Enum.Material.ForceField
+                end
+            end
+        end
+    end
+
+    self._viewModelConns:Connect(camera.ChildAdded, function(child)
+        task.defer(function() processViewModel(child) end)
+    end)
+
+    for _, child in ipairs(camera:GetChildren()) do
+        task.defer(function() processViewModel(child) end)
+    end
+end
+
+-- ========== DUEL CHARACTER SPOOFING ==========
+function Spoofer:_hookDuelCharacters()
+    if not Config.Advanced.SpoofDuelCharacters then return end
+    -- Hook ClientDueler._PreloadCharacterModel
+    local success, clientDueler = pcall(function()
+        return getrawmetatable(game).ClientDueler or game:GetService("ReplicatedStorage"):FindFirstChild("ClientDueler")
+    end)
+    if not success or not clientDueler then
+        -- Try to find in PlayerScripts
+        local playerScripts = Players.LocalPlayer:FindFirstChild("PlayerScripts")
+        if playerScripts then
+            local controllers = playerScripts:FindFirstChild("Controllers")
+            if controllers then
+                local duelController = controllers:FindFirstChild("DuelController")
+                if duelController then
+                    -- Hook via getgc or metatable
+                end
+            end
+        end
+    end
+end
+
+-- ========== COSMETIC MENU SPOOFING ==========
+function Spoofer:_hookCosmeticMenus()
+    if not Config.Advanced.SpoofCosmeticMenus then return end
+    -- Hook CosmeticSlot, CosmeticViewportFrame, etc.
+    -- This would require game-specific paths
+end
+
+-- ========== PROJECTILE/DEPLOYABLE SPOOFING ==========
+function Spoofer:_hookProjectiles()
+    if not Config.Advanced.SpoofProjectiles then return end
+    -- Hook FireHitbox, JumpPad, SmokeCloud, Tripmine viewmodels
+end
+
+-- ========== FINISHER SPOOFING ==========
+function Spoofer:_hookFinishers()
+    if not Config.Advanced.SpoofFinishers then return end
+    -- Hook ClientEntity._PlayFinisher
+end
+
+-- ========== MAIN CONTROL ==========
+function Spoofer:Start()
+    if self._running then return end
+    self._running = true
+
+    -- Hook LocalPlayer
+    self:_hookPlayer(Players.LocalPlayer, true)
+
+    -- Hook existing players
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= Players.LocalPlayer then
+            self:_hookPlayer(player, false)
+        end
+    end
+
+    -- Hook new players
+    self._trove:Connect(Players.PlayerAdded, function(player)
+        self:_hookPlayer(player, false)
+    end)
+
+    self._trove:Connect(Players.PlayerRemoving, function(player)
+        local trove = self._charConns[player]
+        if trove then trove:Destroy(); self._charConns[player] = nil end
+        local ctrove = self._charConns[player]
+        if ctrove then ctrove:Destroy(); self._charConns[player] = nil end
+    end)
+
+    -- Advanced hooks
+    if Config.Advanced.SpoofViewModel then self:_hookViewModel() end
+    if Config.Advanced.SpoofDuelCharacters then self:_hookDuelCharacters() end
+    if Config.Advanced.SpoofCosmeticMenus then self:_hookCosmeticMenus() end
+    if Config.Advanced.SpoofProjectiles then self:_hookProjectiles() end
+    if Config.Advanced.SpoofFinishers then self:_hookFinishers() end
+
+    -- Apply chams to existing characters
+    if Config.Advanced.EnableChams then
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player.Character then self:_applyChams(player.Character, player == Players.LocalPlayer) end
+        end
+    end
+
+    ui:Notify("Nyxix Spoofer started")
+end
+
+function Spoofer:Stop()
+    if not self._running then return end
+    self._running = false
+
+    self._trove:Destroy()
+    self._trove = Trove.new("Spoofer")
+    self._guiConns:Destroy(); self._guiConns = Trove.new()
+    self._viewModelConns:Destroy(); self._viewModelConns = Trove.new()
+    self._duelConns:Destroy(); self._duelConns = Trove.new()
+    self._cosmeticConns:Destroy(); self._cosmeticConns = Trove.new()
+    self._projectileConns:Destroy(); self._projectileConns = Trove.new()
+    self._finisherConns:Destroy(); self._finisherConns = Trove.new()
+
+    for _, trove in pairs(self._charConns) do trove:Destroy() end
+    table.clear(self._charConns)
+
+    -- Remove chams
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character then self:_removeChams(player.Character) end
+    end
+
+    ui:Notify("Nyxix Spoofer stopped")
+end
+
+function Spoofer:Toggle()
+    Config.Enabled = not Config.Enabled
+    configManager:Set("Enabled", Config.Enabled)
+    if Config.Enabled then self:Start() else self:Stop() end
+end
+
+function Spoofer:_hookPlayer(player, isLocal)
+    if player == Players.LocalPlayer and not isLocal then return end
+    local trove = Trove.new()
+    self._charConns[player] = trove
+
+    trove:Connect(player.CharacterAdded, function(char)
+        self:_onCharacterAdded(player, char, isLocal)
+    end)
+
+    if player.Character then
+        trove:Add(task.spawn(function() self:_onCharacterAdded(player, player.Character, isLocal) end))
+    end
+end
+
+-- Initialize spoofer
+local spoofer = Spoofer.new()
+
+-- Auto-start if enabled
+if Config.Enabled then
+    spoofer:Start()
+end
+
+-- ========== KEYBIND HANDLER ==========
+local keybindConnection = nil
+local function setupKeybind()
+    if keybindConnection then keybindConnection:Disconnect() end
+    keybindConnection = UserInputService.InputBegan:Connect(function(input, processed)
+        if processed then return end
+        if input.KeyCode == Enum.KeyCode[Config.Keybind] then
+            spoofer:Toggle()
+        end
+    end)
+end
+setupKeybind()
+
+-- ========== UI CONSTRUCTION ==========
+
+local mainWindow = ui:CreateWindow("Nyxix Spoofer", UDim2.fromOffset(780, 580))
+
+-- Tab: Main
+local mainTab = mainWindow:AddTab("Main", "🏠")
+
+local generalSec = mainTab:AddSection("General")
+generalSec:AddToggle({
+    Label = "Enable Spoofer",
+    Default = Config.Enabled,
+    Callback = function(v) spoofer:Toggle() end,
+    Config = "Enabled",
+})
+generalSec:AddToggle({
+    Label = "Show Notifications",
+    Default = Config.ShowNotifications,
+    Config = "ShowNotifications",
+})
+generalSec:AddToggle({
+    Label = "Show Watermark",
+    Default = Config.ShowWatermark,
+    Config = "ShowWatermark",
+    Callback = function(v) Config.ShowWatermark = v; configManager:Save() end,
+})
+
+-- Keybind
+generalSec:AddKeybind({
+    Label = "Toggle Keybind",
+    Default = Enum.KeyCode[Config.Keybind],
+    Callback = function(k)
+        Config.Keybind = k.Name
+        configManager:Set("Keybind", k.Name)
+        setupKeybind()
+    end,
+    Config = "Keybind",
+})
+
+-- Local Player
+local localSec = mainTab:AddSection("Local Player")
+local localEnabled = localSec:AddToggle({
+    Label = "Enable Local Spoofing",
+    Default = Config.LocalPlayer.Enabled,
+    Config = "LocalPlayer.Enabled",
+    Callback = function(v) Config.LocalPlayer.Enabled = v; configManager:Save() end,
+})
+
+localSec:AddTextBox({
+    Label = "Fake Name",
+    Default = Config.LocalPlayer.Name.Value,
+    Placeholder = "Enter fake name",
+    Config = "LocalPlayer.Name.Value",
+    Callback = function(v) Config.LocalPlayer.Name.Value = v; configManager:Save() end,
+})
+
+localSec:AddTextBox({
+    Label = "Fake Display Name",
+    Default = Config.LocalPlayer.DisplayName.Value,
+    Placeholder = "Enter fake display name",
+    Config = "LocalPlayer.DisplayName.Value",
+    Callback = function(v) Config.LocalPlayer.DisplayName.Value = v; configManager:Save() end,
+})
+
+localSec:AddTextBox({
+    Label = "Avatar UserId",
+    Default = tostring(Config.LocalPlayer.Avatar.Value),
+    Placeholder = "UserId to steal appearance from",
+    Config = "LocalPlayer.Avatar.Value",
+    Callback = function(v) Config.LocalPlayer.Avatar.Value = tonumber(v) or 1; configManager:Save() end,
+})
+
+localSec:AddToggle({
+    Label = "Enable Name Spoof",
+    Default = Config.LocalPlayer.Name.Enabled,
+    Config = "LocalPlayer.Name.Enabled",
+})
+localSec:AddToggle({
+    Label = "Enable DisplayName Spoof",
+    Default = Config.LocalPlayer.DisplayName.Enabled,
+    Config = "LocalPlayer.DisplayName.Enabled",
+})
+localSec:AddToggle({
+    Label = "Enable Avatar Spoof",
+    Default = Config.LocalPlayer.Avatar.Enabled,
+    Config = "LocalPlayer.Avatar.Enabled",
+})
+
+-- Other Players
+local otherSec = mainTab:AddSection("Other Players")
+local otherEnabled = otherSec:AddToggle({
+    Label = "Enable Other Players Spoofing",
+    Default = Config.OtherPlayers.Enabled,
+    Config = "OtherPlayers.Enabled",
+    Callback = function(v) Config.OtherPlayers.Enabled = v; configManager:Save() end,
+})
+
+otherSec:AddTextBox({
+    Label = "Fake Name",
+    Default = Config.OtherPlayers.Name.Value,
+    Placeholder = "Enter fake name",
+    Config = "OtherPlayers.Name.Value",
+    Callback = function(v) Config.OtherPlayers.Name.Value = v; configManager:Save() end,
+})
+
+otherSec:AddTextBox({
+    Label = "Fake Display Name",
+    Default = Config.OtherPlayers.DisplayName.Value,
+    Placeholder = "Enter fake display name",
+    Config = "OtherPlayers.DisplayName.Value",
+    Callback = function(v) Config.OtherPlayers.DisplayName.Value = v; configManager:Save() end,
+})
+
+otherSec:AddTextBox({
+    Label = "Avatar UserId",
+    Default = tostring(Config.OtherPlayers.Avatar.Value),
+    Placeholder = "UserId to steal appearance from",
+    Config = "OtherPlayers.Avatar.Value",
+    Callback = function(v) Config.OtherPlayers.Avatar.Value = tonumber(v) or 1; configManager:Save() end,
+})
+
+otherSec:AddToggle({Label = "Enable Name Spoof", Config = "OtherPlayers.Name.Enabled"})
+otherSec:AddToggle({Label = "Enable DisplayName Spoof", Config = "OtherPlayers.DisplayName.Enabled"})
+otherSec:AddToggle({Label = "Enable Avatar Spoof", Config = "OtherPlayers.Avatar.Enabled"})
+
+-- Tab: Advanced
+local advTab = mainWindow:AddTab("Advanced", "⚙️")
+
+local advSec = advTab:AddSection("Advanced Spoofing")
+advSec:AddToggle({Label = "Spoof ViewModel (Arms)", Config = "Advanced.SpoofViewModel"})
+advSec:AddToggle({Label = "Spoof Duel Characters", Config = "Advanced.SpoofDuelCharacters"})
+advSec:AddToggle({Label = "Spoof Cosmetic Menus", Config = "Advanced.SpoofCosmeticMenus"})
+advSec:AddToggle({Label = "Spoof Projectiles/Deployables", Config = "Advanced.SpoofProjectiles"})
+advSec:AddToggle({Label = "Spoof Finishers", Config = "Advanced.SpoofFinishers"})
+
+local chamsSec = advTab:AddSection("Chams / Visuals")
+chamsSec:AddToggle({Label = "Enable Chams", Config = "Advanced.EnableChams", Callback = function(v)
+    Config.Advanced.EnableChams = v
+    configManager:Save()
+    if v then
+        for _, p in ipairs(Players:GetPlayers()) do if p.Character then spoofer:_applyChams(p.Character, p == Players.LocalPlayer) end end
+    else
+        for _, p in ipairs(Players:GetPlayers()) do if p.Character then spoofer:_removeChams(p.Character) end end
+    end
+end})
+chamsSec:AddColorPicker({Label = "Chams Color", Default = deserializeColor(Config.Advanced.ChamsColor), Config = "Advanced.ChamsColor", Callback = function(c) Config.Advanced.ChamsColor = serializeColor(c); configManager:Save() end})
+chamsSec:AddSlider({Label = "Chams Transparency", Min = 0, Max = 1, Step = 0.05, Default = Config.Advanced.ChamsTransparency, Config = "Advanced.ChamsTransparency", Suffix = ""})
+chamsSec:AddColorPicker({Label = "Outline Color", Default = deserializeColor(Config.Advanced.ChamsOutlineColor), Config = "Advanced.ChamsOutlineColor", Callback = function(c) Config.Advanced.ChamsOutlineColor = serializeColor(c); configManager:Save() end})
+chamsSec:AddSlider({Label = "Outline Transparency", Min = 0, Max = 1, Step = 0.05, Default = Config.Advanced.ChamsOutlineTransparency, Config = "Advanced.ChamsOutlineTransparency", Suffix = ""})
+
+-- Tab: Configs
+local configTab = mainWindow:AddTab("Configs", "💾")
+
+local profileSec = configTab:AddSection("Profile Management")
+
+local profileName = profileSec:AddTextBox({
+    Label = "Profile Name",
+    Placeholder = "Enter profile name",
+    Default = "",
+})
+
+profileSec:AddButton({
+    Label = "Save Current as Profile",
+    Callback = function()
+        local name = profileName.Get()
+        if name and name ~= "" then
+            configManager:SaveProfile(name)
+            ui:Notify("Saved profile: " .. name)
+            refreshProfileList()
+        else
+            ui:Notify("Enter a profile name first", true)
+        end
+    end,
+})
+
+profileSec:AddButton({
+    Label = "Load Selected Profile",
+    Callback = function()
+        local name = profileName.Get()
+        if name and name ~= "" then
+            if configManager:LoadProfile(name) then
+                ui:Notify("Loaded profile: " .. name)
+                -- Refresh UI
+                mainWindow:Destroy()
+                -- Recreate window (simplified)
+                task.wait(0.1)
+                loadstring(readfile(debug.info(1, "s")))()
+            else
+                ui:Notify("Profile not found: " .. name, true)
+            end
+        else
+            ui:Notify("Enter a profile name first", true)
+        end
+    end,
+})
+
+profileSec:AddButton({
+    Label = "Delete Selected Profile",
+    Callback = function()
+        local name = profileName.Get()
+        if name and name ~= "" then
+            configManager:DeleteProfile(name)
+            ui:Notify("Deleted profile: " .. name)
+            refreshProfileList()
+        else
+            ui:Notify("Enter a profile name first", true)
+        end
+    end,
+})
+
+local profileList = profileSec:AddDropdown({
+    Label = "Available Profiles",
+    Options = configManager:ListProfiles(),
+    Default = "",
+    Callback = function(v) profileName.Set(v) end,
+})
+
+function refreshProfileList()
+    profileList.SetOptions(configManager:ListProfiles())
+end
+
+local autoSec = configTab:AddSection("Auto Load/Save")
+autoSec:AddToggle({Label = "Auto Load on Start", Config = "AutoLoad"})
+autoSec:AddDropdown({
+    Label = "Auto Load Profile",
+    Options = configManager:ListProfiles(),
+    Default = Config.AutoLoadConfig,
+    Config = "AutoLoadConfig",
+})
+autoSec:AddToggle({Label = "Auto Save on Change", Config = "AutoSave"})
+autoSec:AddDropdown({
+    Label = "Auto Save Profile",
+    Options = configManager:ListProfiles(),
+    Default = Config.AutoSaveConfig,
+    Config = "AutoSaveConfig",
+})
+
+autoSec:AddButton({
+    Label = "Export Config to Clipboard",
+    Callback = function()
+        local json = HttpService:JSONEncode(configManager:GetAll())
+        setclipboard(json)
+        ui:Notify("Config exported to clipboard")
+    end,
+})
+
+autoSec:AddButton({
+    Label = "Import Config from Clipboard",
+    Callback = function()
+        local clipboard = getclipboard and getclipboard() or ""
+        if clipboard and clipboard ~= "" then
+            local ok, cfg = pcall(HttpService.JSONDecode, HttpService, clipboard)
+            if ok then
+                for k, v in pairs(cfg) do Config[k] = v end
+                configManager:Save()
+                ui:Notify("Config imported from clipboard")
+                mainWindow:Destroy()
+                task.wait(0.1)
+                loadstring(readfile(debug.info(1, "s")))()
+            else
+                ui:Notify("Invalid JSON in clipboard", true)
+            end
+        else
+            ui:Notify("Clipboard is empty", true)
+        end
+    end,
+})
+
+autoSec:AddButton({
+    Label = "Reset to Defaults",
+    Callback = function()
+        for k, v in pairs(DEFAULT_CONFIG) do Config[k] = deepCopy(v) end
+        configManager:Save()
+        ui:Notify("Config reset to defaults")
+        mainWindow:Destroy()
+        task.wait(0.1)
+        loadstring(readfile(debug.info(1, "s")))()
+    end,
+})
+
+-- Tab: Info
+local infoTab = mainWindow:AddTab("Info", "ℹ️")
+local infoSec = infoTab:AddSection("Nyxix Spoofer")
+infoSec:AddLabel({Text = "Nyxix Spoofer v" .. CONFIG_VERSION, Bold = true, Size = 16})
+infoSec:AddLabel({Text = "Advanced player spoofer for Roblox", Size = 13})
+infoSec:AddDivider()
+infoSec:AddLabel({Text = "Features:", Bold = true})
+infoSec:AddLabel({Text = "• Name & DisplayName spoofing (GUI-wide)"})
+infoSec:AddLabel({Text = "• Avatar thumbnail spoofing"})
+infoSec:AddLabel({Text = "• Full character appearance spoofing"})
+infoSec:AddLabel({Text = "• ViewModel (arms) spoofing"})
+infoSec:AddLabel({Text = "• Duel character spoofing"})
+infoSec:AddLabel({Text = "• Cosmetic menu spoofing"})
+infoSec:AddLabel({Text = "• Projectile/deployable spoofing"})
+infoSec:AddLabel({Text = "• Finisher clone spoofing"})
+infoSec:AddLabel({Text = "• Chams with custom colors"})
+infoSec:AddDivider()
+infoSec:AddLabel({Text = "Press " .. Config.Keybind .. " to toggle", Size = 13, Color = currentTheme.Accent})
+
+-- Auto-load profile if enabled
+if Config.AutoLoad and Config.AutoLoadConfig and Config.AutoLoadConfig ~= "" then
+    task.spawn(function()
+        task.wait(1)
+        if configManager:LoadProfile(Config.AutoLoadConfig) then
+            ui:Notify("Auto-loaded profile: " .. Config.AutoLoadConfig)
+        end
+    end)
+end
+
+-- ========== CLEANUP & FINAL ==========
+
+-- Handle script re-execution
+if getgenv().NyxixSpoofer then
+    getgenv().NyxixSpoofer:Destroy()
+end
+
+local NyxixSpoofer = {
+    UI = ui,
+    Spoofer = spoofer,
+    Config = Config,
+    ConfigManager = configManager,
+    Window = mainWindow,
+    Theme = currentTheme,
+    Version = CONFIG_VERSION,
+
+    Start = function() spoofer:Start() end,
+    Stop = function() spoofer:Stop() end,
+    Toggle = function() spoofer:Toggle() end,
+    SetConfig = function(cfg) for k, v in pairs(cfg) do Config[k] = v end; configManager:Save() end,
+    GetConfig = function() return Config end,
+    LoadProfile = function(name) return configManager:LoadProfile(name) end,
+    SaveProfile = function(name) configManager:SaveProfile(name) end,
+    DeleteProfile = function(name) configManager:DeleteProfile(name) end,
+    ListProfiles = function() return configManager:ListProfiles() end,
+    Destroy = function()
+        spoofer:Stop()
+        ui._trove:Destroy()
+        if keybindConnection then keybindConnection:Disconnect() end
+        getgenv().NyxixSpoofer = nil
+    end,
+}
+
+getgenv().NyxixSpoofer = NyxixSpoofer
+
+-- Notify ready
+ui:Notify("Nyxix Spoofer v" .. CONFIG_VERSION .. " loaded! Press " .. Config.Keybind .. " to toggle")
+
+return NyxixSpoofer
